@@ -1,10 +1,6 @@
 #ifndef COMMON_H
 #define COMMON_H
 
-#include <stdbool.h>
-
-#define BLOCKING_TIMEOUT -1
-
 #ifndef EXIT_SUCCESS
     #define EXIT_SUCCESS 0
     #define EXIT_FAILURE 1
@@ -25,9 +21,5 @@ FileList construct_path_list( int argc, char ** argv, char const * filename );
 
 void _niceassert( long cond, int line, char const * file, char const * condstr,
                   char const * mesg );
-
-void warn_inotify_init_error();
-
-bool is_timeout_option_valid(long int *timeout, char *optarg);
 
 #endif

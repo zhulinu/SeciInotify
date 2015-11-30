@@ -149,10 +149,8 @@ static int error = 0;
 static int init = 0;
 static char* timefmt = 0;
 static regex_t* regex = 0;
-/* 0: --exclude[i], 1: --include[i] */
-static int invert_regexp = 0;
 
-static int isdir( char const * path );
+int isdir( char const * path );
 void record_stats( struct inotify_event const * event );
 int onestr_to_event(char const * event);
 
@@ -195,8 +193,8 @@ int onestr_to_event(char const * event);
  *
  * @param  mesg  A human-readable error message shown if assertion fails.
  */
-static void _niceassert( long cond, int line, char const * file,
-                  char const * condstr, char const * mesg ) {
+void _niceassert( long cond, int line, char const * file, char const * condstr,
+                  char const * mesg ) {
 	if ( cond ) return;
 
 	if ( mesg ) {
@@ -287,7 +285,7 @@ int inotifytools_initialize() {
 	// Try to initialise inotify
 	inotify_fd = inotify_init();
 	if (inotify_fd < 0)	{
-		error = errno;
+		error = inotify_fd;
 		return 0;
 	}
 
@@ -1020,8 +1018,8 @@ int inotifytools_watch_files( char const * filenames[], int events ) {
  * be used.
  *
  * @param timeout maximum amount of time, in seconds, to wait for an event.
- *                If @a timeout is non-negative, the function is non-blocking.
- *                If @a timeout is negative, the function will block until an
+ *                If @a timeout is 0, the function is non-blocking.  If
+ *                @a timeout is negative, the function will block until an
  *                event occurs.
  *
  * @return pointer to an inotify event, or NULL if function timed out before
@@ -1039,7 +1037,7 @@ int inotifytools_watch_files( char const * filenames[], int events ) {
  *       which match the regular expression passed to that function.  However,
  *       the @a timeout period begins again each time a matching event occurs.
  */
-struct inotify_event * inotifytools_next_event( long int timeout ) {
+struct inotify_event * inotifytools_next_event( int timeout ) {
 	return inotifytools_next_events( timeout, 1 );
 }
 
@@ -1051,8 +1049,8 @@ struct inotify_event * inotifytools_next_event( long int timeout ) {
  * be used.
  *
  * @param timeout maximum amount of time, in seconds, to wait for an event.
- *                If @a timeout is non-negative, the function is non-blocking.
- *                If @a timeout is negative, the function will block until an
+ *                If @a timeout is 0, the function is non-blocking.  If
+ *                @a timeout is negative, the function will block until an
  *                event occurs.
  *
  * @param num_events approximate number of inotify events to wait for until
@@ -1083,16 +1081,17 @@ struct inotify_event * inotifytools_next_event( long int timeout ) {
  *       occurrences) you must call this function with @a num_events = 1, or
  *       simply use inotifytools_next_event().
  *
- * @note Your program should call this function frequently; between calls to this
- *       function, inotify events will be queued in the kernel, and eventually
- *       the queue will overflow and you will miss some events.
+ * @note Your program should call this function or
+ *       inotifytools_next_events() frequently; between calls to this function,
+ *       inotify events will be queued in the kernel, and eventually the queue
+ *       will overflow and you will miss some events.
  *
  * @note If the function inotifytools_ignore_events_by_regex() has been called
  *       with a non-NULL parameter, this function will not return on events
  *       which match the regular expression passed to that function.  However,
  *       the @a timeout period begins again each time a matching event occurs.
  */
-struct inotify_event * inotifytools_next_events( long int timeout, int num_events ) {
+struct inotify_event * inotifytools_next_events( int timeout, int num_events ) {
 	niceassert( init, "inotifytools_initialize not called yet" );
 	niceassert( num_events <= MAX_EVENTS, "too many events requested" );
 
@@ -1109,11 +1108,7 @@ struct inotify_event * inotifytools_next_events( long int timeout, int num_event
 	if (regex) {\
 		inotifytools_snprintf(match_name, MAX_STRLEN, A, "%w%f");\
 		if (0 == regexec(regex, match_name, 0, 0, 0)) {\
-			if (!invert_regexp)\
-				longjmp(jmp,0);\
-		} else {\
-			if (invert_regexp)\
-				longjmp(jmp,0);\
+			longjmp(jmp,0);\
 		}\
 	}\
 	if ( collect_stats ) {\
@@ -1172,7 +1167,7 @@ struct inotify_event * inotifytools_next_events( long int timeout, int num_event
 	read_timeout.tv_sec = timeout;
 	read_timeout.tv_usec = 0;
 	static struct timeval * read_timeout_ptr;
-	read_timeout_ptr = ( timeout < 0 ? NULL : &read_timeout );
+	read_timeout_ptr = ( timeout <= 0 ? NULL : &read_timeout );
 
 	FD_ZERO(&read_fds);
 	FD_SET(inotify_fd, &read_fds);
@@ -1599,7 +1594,7 @@ int inotifytools_error() {
 /**
  * @internal
  */
-static int isdir( char const * path ) {
+int isdir( char const * path ) {
 	static struct stat64 my_stat;
 
 	if ( -1 == lstat64( path, &my_stat ) ) {
@@ -1997,16 +1992,14 @@ int inotifytools_get_max_user_watches() {
  * Ignore inotify events matching a particular regular expression.
  *
  * @a pattern is a regular expression and @a flags is a bitwise combination of
- * POSIX regular expression flags. @a invert determines the type of filtering:
- * 0 (--exclude[i]): exclude all files matching @a pattern
- * 1 (--include[i]): exclude all files except those matching @a pattern
+ * POSIX regular expression flags.
  *
  * On future calls to inotifytools_next_events() or inotifytools_next_event(),
  * the regular expression is executed on the filename of files on which
  * events occur.  If the regular expression matches, the matched event will be
  * ignored.
  */
-static int do_ignore_events_by_regex( char const *pattern, int flags, int invert ) {
+int inotifytools_ignore_events_by_regex( char const *pattern, int flags ) {
 	if (!pattern) {
 		if (regex) {
 			regfree(regex);
@@ -2019,7 +2012,6 @@ static int do_ignore_events_by_regex( char const *pattern, int flags, int invert
 	if (regex) { regfree(regex); }
 	else       { regex = (regex_t *)malloc(sizeof(regex_t)); }
 
-	invert_regexp = invert;
 	int ret = regcomp(regex, pattern, flags | REG_NOSUB);
 	if (0 == ret) return 1;
 
@@ -2028,36 +2020,6 @@ static int do_ignore_events_by_regex( char const *pattern, int flags, int invert
 	regex = 0;
 	error = EINVAL;
 	return 0;
-}
-
-/**
- * Ignore inotify events matching a particular regular expression.
- *
- * @a pattern is a regular expression and @a flags is a bitwise combination of
- * POSIX regular expression flags.
- *
- * On future calls to inotifytools_next_events() or inotifytools_next_event(),
- * the regular expression is executed on the filename of files on which
- * events occur.  If the regular expression matches, the matched event will be
- * ignored.
- */
-int inotifytools_ignore_events_by_regex( char const *pattern, int flags ) {
-	return do_ignore_events_by_regex(pattern, flags, 0);
-}
-
-/**
- * Ignore inotify events NOT matching a particular regular expression.
- *
- * @a pattern is a regular expression and @a flags is a bitwise combination of
- * POSIX regular expression flags.
- *
- * On future calls to inotifytools_next_events() or inotifytools_next_event(),
- * the regular expression is executed on the filename of files on which
- * events occur.  If the regular expression matches, the matched event will be
- * ignored.
- */
-int inotifytools_ignore_events_by_inverted_regex( char const *pattern, int flags ) {
-	return do_ignore_events_by_regex(pattern, flags, 1);
 }
 
 int event_compare(const void *p1, const void *p2, const void *config)

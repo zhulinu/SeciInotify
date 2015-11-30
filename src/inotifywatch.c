@@ -27,6 +27,8 @@
 extern char *optarg;
 extern int optind, opterr, optopt;
 
+#define EXCLUDE_CHUNK 1024
+
 #define nasprintf(...) niceassert( -1 != asprintf(__VA_ARGS__), "out of memory")
 
 // METHODS
@@ -34,16 +36,14 @@ bool parse_opts(
   int * argc,
   char *** argv,
   int * events,
-  long int * timeout,
+  int * timeout,
   int * verbose,
   int * zero,
   int * sort,
   int * recursive,
   char ** fromfile,
-  char ** exc_regex,
-  char ** exc_iregex,
-  char ** inc_regex,
-  char ** inc_iregex
+  char ** regex,
+  char ** iregex
 );
 
 void print_help();
@@ -82,47 +82,41 @@ int zero;
 int main(int argc, char ** argv)
 {
 	events = 0;
-	long int timeout = BLOCKING_TIMEOUT;
+	int timeout = 0;
 	int verbose = 0;
 	zero = 0;
 	int recursive = 0;
 	char * fromfile = 0;
 	sort = -1;
 	done = false;
-	char * exc_regex = NULL;
-	char * exc_iregex = NULL;
-	char * inc_regex = NULL;
-	char * inc_iregex = NULL;
+	char * regex = NULL;
+	char * iregex = NULL;
 
 	signal( SIGINT, handle_impatient_user );
 
 	// Parse commandline options, aborting if something goes wrong
 	if ( !parse_opts( &argc, &argv, &events, &timeout, &verbose, &zero, &sort,
-	                 &recursive, &fromfile, &exc_regex, &exc_iregex,
-	                 &inc_regex, &inc_iregex ) ) {
+	                 &recursive, &fromfile, &regex, &iregex ) ) {
 		return EXIT_FAILURE;
 	}
 
 	if (
-		(exc_regex && !inotifytools_ignore_events_by_regex(exc_regex, REG_EXTENDED) ) ||
-		(exc_iregex && !inotifytools_ignore_events_by_regex(exc_iregex, REG_EXTENDED|
+		(regex && !inotifytools_ignore_events_by_regex(regex, REG_EXTENDED) ) ||
+		(iregex && !inotifytools_ignore_events_by_regex(iregex, REG_EXTENDED|
 		                                                        REG_ICASE))
 	) {
 		fprintf(stderr, "Error in `exclude' regular expression.\n");
 		return EXIT_FAILURE;
 	}
 
-	if (
-		(inc_regex && !inotifytools_ignore_events_by_inverted_regex(inc_regex, REG_EXTENDED) ) ||
-		(inc_iregex && !inotifytools_ignore_events_by_inverted_regex(inc_iregex, REG_EXTENDED|
-		                                                        REG_ICASE))
-	) {
-		fprintf(stderr, "Error in `include' regular expression.\n");
-		return EXIT_FAILURE;
-	}
-
 	if ( !inotifytools_initialize() ) {
-		warn_inotify_init_error();
+		fprintf(stderr, "Couldn't initialize inotify.  Are you running Linux "
+		                "2.6.13 or later, and was the\n"
+		                "CONFIG_INOTIFY option enabled when your kernel was "
+		                "compiled?  If so, \n"
+		                "something mysterious has gone wrong.  Please e-mail "
+		                PACKAGE_BUGREPORT "\n"
+		                " and mention that you saw this message.\n");
 		return EXIT_FAILURE;
 	}
 
@@ -183,7 +177,7 @@ int main(int argc, char ** argv)
 	fprintf( stderr, "Finished establishing watches, now collecting statistics.\n" );
 
 	if ( timeout && verbose ) {
-		fprintf( stderr, "Will listen for events for %ld seconds.\n", timeout );
+		fprintf( stderr, "Will listen for events for %d seconds.\n", timeout );
 	}
 
 	signal( SIGINT, handle_signal );
@@ -201,7 +195,7 @@ int main(int argc, char ** argv)
 	char * moved_from = 0;
 
 	do {
-		event = inotifytools_next_event(BLOCKING_TIMEOUT);
+		event = inotifytools_next_event( 0 );
 		if ( !event ) {
 			if ( !inotifytools_error() ) {
 				return EXIT_TIMEOUT;
@@ -271,6 +265,9 @@ int main(int argc, char ** argv)
 }
 
 int print_info() {
+        unsigned int num_watches = 0;
+        num_watches = inotifytools_get_num_watches();
+
 	if ( !inotifytools_get_stat_total( 0 ) ) {
 		fprintf( stderr, "No events occurred.\n" );
 		return EXIT_SUCCESS;
@@ -386,27 +383,24 @@ bool parse_opts(
   int * argc,
   char *** argv,
   int * events,
-  long int * timeout,
+  int * timeout,
   int * verbose,
   int * zero,
   int * sort,
   int * recursive,
   char ** fromfile,
-  char ** exc_regex,
-  char ** exc_iregex,
-  char ** inc_regex,
-  char ** inc_iregex
+  char ** regex,
+  char ** iregex
 ) {
 	assert( argc ); assert( argv ); assert( events ); assert( timeout );
 	assert( verbose ); assert( zero ); assert( sort ); assert( recursive );
-	assert( fromfile ); assert( exc_regex ); assert( exc_iregex );
-	assert( inc_regex ); assert( inc_iregex );
+	assert( fromfile ); assert( regex ); assert( iregex );
 
 	// Short options
 	char * opt_string = "hra:d:zve:t:";
 
 	// Construct array
-	struct option long_opts[14];
+	struct option long_opts[12];
 
 	// --help
 	long_opts[0].name = "help";
@@ -424,6 +418,7 @@ bool parse_opts(
 	long_opts[2].has_arg = 1;
 	long_opts[2].flag = NULL;
 	long_opts[2].val = (int)'t';
+	char * timeout_end = NULL;
 	// --verbose
 	long_opts[3].name = "verbose";
 	long_opts[3].has_arg = 0;
@@ -465,21 +460,11 @@ bool parse_opts(
 	long_opts[10].has_arg = 1;
 	long_opts[10].flag = NULL;
 	long_opts[10].val = (int)'b';
-	// --include
-	long_opts[11].name = "include";
-	long_opts[11].has_arg = 1;
-	long_opts[11].flag = NULL;
-	long_opts[11].val = (int)'j';
-	// --includei
-	long_opts[12].name = "includei";
-	long_opts[12].has_arg = 1;
-	long_opts[12].flag = NULL;
-	long_opts[12].val = (int)'k';
 	// Empty last element
-	long_opts[13].name = 0;
-	long_opts[13].has_arg = 0;
-	long_opts[13].flag = 0;
-	long_opts[13].val = 0;
+	long_opts[11].name = 0;
+	long_opts[11].has_arg = 0;
+	long_opts[11].flag = 0;
+	long_opts[11].val = 0;
 
 	// Get first option
 	char curr_opt = getopt_long(*argc, *argv, opt_string, long_opts, NULL);
@@ -513,22 +498,12 @@ bool parse_opts(
 
 			// --exclude
 			case 'c':
-				(*exc_regex) = optarg;
+				(*regex) = optarg;
 				break;
 
 			// --excludei
 			case 'b':
-				(*exc_iregex) = optarg;
-				break;
-
-			// --include
-			case 'j':
-				(*inc_regex) = optarg;
-				break;
-
-			// --includei
-			case 'k':
-				(*inc_iregex) = optarg;
+				(*iregex) = optarg;
 				break;
 
 			// --fromfile
@@ -542,10 +517,16 @@ bool parse_opts(
 
 			// --timeout or -t
 			case 't':
-			  if (!is_timeout_option_valid(timeout, optarg)) {
-			    return false;
-			  }
-			  break;
+				*timeout = strtoul(optarg, &timeout_end, 10);
+				if ( *timeout_end != '\0' || *timeout < 0)
+				{
+					fprintf(stderr, "'%s' is not a valid timeout value.\n"
+					        "Please specify an integer of value 0 or "
+					        "greater.\n",
+					        optarg);
+					return false;
+				}
+				break;
 
 			// --event or -e
 			case 'e':
@@ -639,17 +620,8 @@ bool parse_opts(
 		return false;
 	}
 
-	if ( *exc_regex && *exc_iregex ) {
+	if ( *regex && *iregex ) {
 		fprintf(stderr, "--exclude and --excludei cannot both be specified.\n");
-		return false;
-	}
-	if ( *inc_regex && *inc_iregex ) {
-		fprintf(stderr, "--include and --includei cannot both be specified.\n");
-		return false;
-	}
-	if ( (*inc_regex && *exc_regex) || (*inc_regex && *exc_iregex) ||
-		 (*inc_iregex && *exc_regex) || (*inc_iregex && *exc_iregex) ) {
-		fprintf(stderr, "include and exclude regexp cannot both be specified.\n");
 		return false;
 	}
 
@@ -675,12 +647,6 @@ void print_help()
 	       "\t\texpression <pattern>.\n");
 	printf("\t--excludei <pattern>\n"
 	       "\t\tLike --exclude but case insensitive.\n");
-	printf("\t--include <pattern>\n"
-	       "\t\tExclude all events on files except the ones\n"
-	       "\t\tmatching the extended regular expression\n"
-	       "\t\t<pattern>.\n");
-	printf("\t--includei <pattern>\n"
-	       "\t\tLike --include but case insensitive.\n");
 	printf("\t-z|--zero\n"
 	       "\t\tIn the final table of results, output rows and columns even\n"
 	       "\t\tif they consist only of zeros (the default is to not output\n"
@@ -688,7 +654,7 @@ void print_help()
 	printf("\t-r|--recursive\tWatch directories recursively.\n");
 	printf("\t-t|--timeout <seconds>\n"
 	       "\t\tListen only for specified amount of time in seconds; if\n"
-	       "\t\tomitted or negative, inotifywatch will execute until receiving an\n"
+	       "\t\tomitted or 0, inotifywatch will execute until receiving an\n"
 	       "\t\tinterrupt signal.\n");
 	printf("\t-e|--event <event1> [ -e|--event <event2> ... ]\n"
 	       "\t\tListen for specific event(s).  If omitted, all events are \n"

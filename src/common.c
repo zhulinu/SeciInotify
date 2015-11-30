@@ -5,13 +5,11 @@
 #include <sys/types.h>
 
 #include <errno.h>
-#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
-#include <inotifytools/inotifytools.h>
 
 #define MAXLEN 4096
 #define LIST_CHUNK 1024
@@ -36,7 +34,6 @@ void print_event_descriptions() {
 	printf("\tmoved_to\tfile or directory moved to watched directory\n");
 	printf("\tmoved_from\tfile or directory moved from watched directory\n");
 	printf("\tmove\t\tfile or directory moved to or from watched directory\n");
-	printf("\tmove_self\t\tA watched file or directory was moved.\n");
 	printf("\tcreate\t\tfile or directory created within watched directory\n");
 	printf("\tdelete\t\tfile or directory deleted within watched directory\n");
 	printf("\tdelete_self\tfile or directory was deleted\n");
@@ -121,56 +118,4 @@ void _niceassert( long cond, int line, char const * file, char const * condstr,
 	else {
 		fprintf(stderr, "%s:%d assertion ( %s ) failed.\n", file, line, condstr);
 	}
-}
-
-void warn_inotify_init_error()
-{
-	int error = inotifytools_error();
-	fprintf(stderr, "Couldn't initialize inotify: %s\n", strerror(error));
-	if (error == EMFILE) {
-		fprintf(stderr, "Try increasing the value of /proc/sys/fs/inotify/max_user_instances\n");
-	}
-}
-
-bool is_timeout_option_valid(long int *timeout, char *optarg)
-{
-	if ((optarg == NULL) || (*optarg == '\0')) {
-		fprintf(stderr, "The provided value is not a valid timeout value.\n"
-				"Please specify a long int value.\n");
-		return false;
-	}
-
-	char *timeout_end = NULL;
-	errno = 0;
-	*timeout = strtol(optarg, &timeout_end, 10);
-
-	const int err = errno;
-	if (err != 0) {
-		if (err == ERANGE) {
-			// Figure out on which side it overflows.
-			if (*timeout == LONG_MAX) {
-				fprintf(stderr, "The timeout value you provided is "
-						"not in the representable range "
-						"(higher than LONG_MAX).\n");
-			} else {
-				fprintf(stderr, "The timeout value you provided is "
-						"not in the representable range "
-						"(lower than LONG_MIN).\n");
-			}
-
-		} else {
-			fprintf(stderr, "Something went wrong with the timeout "
-					"value you provided.\n");
-			fprintf(stderr, "%s\n", strerror(err));
-		}
-		return false;
-	}
-
-	if (*timeout_end != '\0') {
-		fprintf(stderr, "'%s' is not a valid timeout value.\n"
-				"Please specify a long int value.\n", optarg);
-		return false;
-	}
-
-	return true;
 }
